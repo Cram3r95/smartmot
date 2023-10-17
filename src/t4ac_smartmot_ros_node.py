@@ -24,6 +24,7 @@ import numpy as np
 # ROS imports
 
 import rospy
+import tf
 
 from visualization_msgs.msg import MarkerArray
 from ad_perdevkit.msg import GT_3D_Object_list
@@ -57,25 +58,29 @@ class SmartMOT():
         """
         """
 
-        self.DEBUG = False
+        self.DEBUG = True
         self.ego_vehicle_location = None
         self.trackers = {}
         self.monitored_lanes = MonitorizedLanes()
         self.COMPUTE_MARKERS = True
-        self.USE_HDMAP = False
+        self.USE_HDMAP = True
+        self.REAL_WORLD = False
         
         # Multi-Object Tracking
         
-        self.mot_tracker = sort_functions.Sort(max_age=3,min_hits=2, iou_threshold=0.1)
+        self.mot_tracker = sort_functions.Sort(max_age=5,min_hits=1, iou_threshold=0.01)
         self.list_of_ids = {}
         self.state = {}
         self.timestamp = 0
         self.range = 150
         self.max_agents = 11 # including ego-vehicle (only for Decision-Making module)
         
-        # ROS communications
+        # ROS
         
-        self.frame_id = None
+        self.listener = tf.TransformListener()
+        self.map_frame = rospy.get_param('/t4ac/frames/map')
+        self.lidar_frame = rospy.get_param('/t4ac/frames/lidar')
+        self.tf_map2lidar = np.zeros((4,4))
         
         ## Publishers
         
@@ -89,10 +94,13 @@ class SmartMOT():
         localization_pose_topic = "/t4ac/localization/pose"
         self.sub_location_ego = rospy.Subscriber(localization_pose_topic, Odometry, self.localization_callback)
 
-        # detections_topic = "/ad_devkit/generate_perception_groundtruth_node/perception_groundtruth"
-        # self.sub_detections = rospy.Subscriber(detections_topic, GT_3D_Object_list, self.detections_callback)
-        detections_topic = "/t4ac/perception/3D_lidar_obstacles_markers"
-        self.sub_detections = rospy.Subscriber(detections_topic, MarkerArray, self.detections_callback)
+        if self.REAL_WORLD:
+            self.USE_HDMAP = False
+            detections_topic = "/t4ac/perception/3D_lidar_obstacles_markers"
+            self.sub_detections = rospy.Subscriber(detections_topic, MarkerArray, self.detections_callback)
+        else:
+            detections_topic = "/ad_devkit/generate_perception_groundtruth_node/perception_groundtruth"
+            self.sub_detections = rospy.Subscriber(detections_topic, GT_3D_Object_list, self.detections_callback)
         
         monitored_lanes_topic = "/t4ac/perception/monitors/monitorized_lanes"
         self.sub_monitored_lanes = rospy.Subscriber(monitored_lanes_topic, MonitorizedLanes, self.monitored_lanes_callback)
@@ -115,9 +123,19 @@ class SmartMOT():
         """
         """
         
-        start = time.time()
-        start__ = time.time()
-        if self.ego_vehicle_location:
+        # Map to LiDAR
+
+        try:                                                         # Target        # Source
+            (translation,quaternion) = self.listener.lookupTransform(self.map_frame, self.lidar_frame, rospy.Time(0)) 
+            # rospy.Time(0) get us the latest available transform
+            rot_matrix = tf.transformations.quaternion_matrix(quaternion)
+            
+            self.tf_map2lidar = rot_matrix
+            self.tf_map2lidar[:3,3] = self.tf_map2lidar[:3,3] + translation 
+        except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+            print("\033[1;33m"+"TF Map2LiDAR exception"+'\033[0;m')
+  
+        if self.ego_vehicle_location and np.any(self.tf_map2lidar):
             orientation_q = self.ego_vehicle_location.pose.pose.orientation
             orientation_list = [orientation_q.x, orientation_q.y, orientation_q.z, orientation_q.w]
             (ego_roll, ego_pitch, ego_yaw) = euler_from_quaternion(orientation_list)
@@ -126,79 +144,83 @@ class SmartMOT():
             
             relevant_detections = []
             
-            # If AD-PerDevKit (at this moment in the CARLA Leaderboard)
-            
-            # for i,detection in enumerate(detections_rosmsg.gt_3d_object_list):
-            #     if i > 0: # We assume the first object, if using GT, it is the ego-vehicle. Avoid this.
-            #         detection.rotation_z = ego_yaw - detection.rotation_z # To obtain the angle in global frame
+            if self.REAL_WORLD:
+                # If Object detection in AIVATAR project (Real-World)
+                for i, detection in enumerate(detections_rosmsg.markers):                    
+                    quat_xyzw = detection.pose.orientation
+                    quaternion = np.array((quat_xyzw.x, quat_xyzw.y, quat_xyzw.z, quat_xyzw.w))
+                    detection_yaw = euler_from_quaternion(quaternion)[2]
+                    
+                    if self.USE_HDMAP:
+                        is_relevant = False
+                        for lane in self.monitored_lanes.lanes:
+                            if len(lane.left.way)> 1:
+                                is_relevant, in_road, particular_monitorized_area, _, _ = monitors_functions.inside_lane(detection.global_position, lane, detection.type)
                             
-            #                 if self.USE_HDMAP:
-            #                     is_relevant = False
-            #                     for lane in monitored_lanes_rosmsg.lanes:
-            #                         if len(lane.left.way)> 1:
-            #                             is_relevant, in_road, particular_monitorized_area, _, _ = monitors_functions.inside_lane(detection.global_position, lane, detection.type)
+                                if is_relevant:
+                                    # if detection.object_id not in self.trackers.keys():
+                                    #     self.trackers[detection.object_id] = [detection]
+                                    # else:
+                                    #     self.trackers[detection.object_id].append(detection)
                                     
-            #                             if is_relevant:
-            #                                 # if detection.object_id not in self.trackers.keys():
-            #                                 #     self.trackers[detection.object_id] = [detection]
-            #                                 # else:
-            #                                 #     self.trackers[detection.object_id].append(detection)
-                                            
-            #                                 # Local coordinates
-            #                                 # TODO: Fill the velocity of the object in the 7th position of the list
-                                            
-            #                                 relevant_detection = [detection.position.x, detection.position.y, detection.position.z, # x,y,z
-            #                                                       detection.dimensions.x, detection.dimensions.y, detection.dimensions.z, # l,w,h
-            #                                                       detection.rotation_z, 0, detection.type] # theta, vel, type
-                                            
-            #                                 relevant_detections.append(relevant_detection)
-                                            
-            #                                 break
-            #                 else:
-            #                     relevant_detection = [detection.position.x, detection.position.y, detection.position.z, # x,y,z
-            #                                           detection.dimensions.x, detection.dimensions.y, detection.dimensions.z, # l,w,h
-            #                                           detection.rotation_z, 0, detection.type] # theta, vel, type
-                                            
-            #                     relevant_detections.append(relevant_detection)
-            
-            # If Object detection in AIVATAR project
-            
-            for i, detection in enumerate(detections_rosmsg.markers):
-                # detection.rotation_z = ego_yaw - detection.rotation_z # To obtain the angle in global frame
-                if not self.frame_id: self.frame_id = detection.header.frame_id
-                
-                quat_xyzw = detection.pose.orientation
-                quaternion = np.array((quat_xyzw.x, quat_xyzw.y, quat_xyzw.z, quat_xyzw.w))
-                detection_yaw = euler_from_quaternion(quaternion)[2]
-                
-                if self.USE_HDMAP:
-                    is_relevant = False
-                    for lane in monitored_lanes_rosmsg.lanes:
-                        if len(lane.left.way)> 1:
-                            is_relevant, in_road, particular_monitorized_area, _, _ = monitors_functions.inside_lane(detection.global_position, lane, detection.type)
+                                    # Global coordinates
+                                    # TODO: Fill the velocity of the object in the 7th position of the list
+                                    detection_yaw = ego_yaw - detection_yaw # To obtain the angle in global frame, i.e. map coordinates
+                                    global_position = monitors_functions.apply_tf(detection.pose.position,self.tf_map2lidar)
+                                    
+                                    relevant_detection = [global_position.x, global_position.y, global_position.z, # x,y,z
+                                                            detection.dimensions.x, detection.dimensions.y, detection.dimensions.z, # l,w,h
+                                                            detection_yaw, 0, "generic"] # theta, vel, type
+                                    
+                                    relevant_detections.append(relevant_detection)
+                                    
+                                    break
+                    else:
+                        # Global coordinates
+                        # TODO: Fill the velocity of the object in the 7th position of the list
                         
-                            if is_relevant:
-                                # if detection.object_id not in self.trackers.keys():
-                                #     self.trackers[detection.object_id] = [detection]
-                                # else:
-                                #     self.trackers[detection.object_id].append(detection)
+                        detection_yaw = ego_yaw - detection_yaw # To obtain the angle in global frame, i.e. map coordinates
+                        global_position = monitors_functions.apply_tf(detection.pose.position,self.tf_map2lidar)
+                        
+                        relevant_detection = [global_position.x, global_position.y, global_position.z, # x,y,z
+                                                detection.dimensions.x, detection.dimensions.y, detection.dimensions.z, # l,w,h
+                                                detection_yaw, 0, "generic"] # theta, vel, type
+                        
+                        relevant_detections.append(relevant_detection)
+            else:
+                # If AD-PerDevKit (at this moment in the CARLA Leaderboard)
+                for i,detection in enumerate(detections_rosmsg.gt_3d_object_list):                    
+                    if i > 0: # We assume the first object, if using GT, it is the ego-vehicle. Avoid this.                     
+                        if self.USE_HDMAP:
+                            is_relevant = False
+                            for lane in self.monitored_lanes.lanes:
+                                if len(lane.left.way)> 1:
+                                    is_relevant, in_road, particular_monitorized_area, _, _ = monitors_functions.inside_lane(detection.global_position, lane, detection.type)
                                 
-                                # Local coordinates
-                                # TODO: Fill the velocity of the object in the 7th position of the list
-                                
-                                relevant_detection = [detection.pose.position.x, detection.pose.position.y, detection.pose.position.z, # x,y,z
-                                          detection.scale.x, detection.scale.y, detection.scale.z, # l,w,h
-                                          detection_yaw, 0, "generic"] # theta, vel, type
-                                
-                                relevant_detections.append(relevant_detection)
-                                
-                                break
-                else:
-                    relevant_detection = [detection.pose.position.x, detection.pose.position.y, detection.pose.position.z, # x,y,z
-                                          detection.scale.x, detection.scale.y, detection.scale.z, # l,w,h
-                                          detection_yaw, 0, "generic"] # theta, vel, type
-                                
-                    relevant_detections.append(relevant_detection)
+                                    if is_relevant:   
+                                        # Global coordinates
+                                        # TODO: Fill the velocity of the object in the 7th position of the list
+                                        
+                                        detection.rotation_z = ego_yaw - detection.rotation_z # To obtain the angle in global frame, i.e. map coordinates
+                                        
+                                        relevant_detection = [detection.global_position.x, detection.global_position.y, detection.global_position.z, # x,y,z
+                                                                detection.dimensions.x, detection.dimensions.y, detection.dimensions.z, # l,w,h
+                                                                detection.rotation_z, 0, detection.type] # theta, vel, type
+                                        
+                                        relevant_detections.append(relevant_detection)
+                                        
+                                        break
+                        else:
+                            # Global coordinates
+                            # TODO: Fill the velocity of the object in the 7th position of the list
+                            
+                            detection.rotation_z = ego_yaw - detection.rotation_z # To obtain the angle in global frame, i.e. map coordinates
+                            
+                            relevant_detection = [detection.global_position.x, detection.global_position.y, detection.global_position.z, # x,y,z
+                                                    detection.dimensions.x, detection.dimensions.y, detection.dimensions.z, # l,w,h
+                                                    detection.rotation_z, 0, detection.type] # theta, vel, type
+                            
+                            relevant_detections.append(relevant_detection)
                 
         #################################################################
         ############## MULTI-OBJECT TRACKING PIPELINE ###################
@@ -214,23 +236,21 @@ class SmartMOT():
 
         if self.DEBUG: print("\033[1;35m"+"Final Trackers: "+'\033[0;m', trackers)
         # stamp = detections_rosmsg.header.stamp
-        stamp = self.ego_vehicle_location.header.stamp
+        
         tracker_marker_list = MarkerArray()
-
-        for tracker in trackers:
+        for j,tracker in enumerate(trackers):
+            stamp = self.ego_vehicle_location.header.stamp
             color = COLOURS[tracker[5].astype(int)%32]
-            tracker_marker = ros_functions.tracker_to_marker(tracker,color,stamp,self.frame_id)
+            tracker_marker = ros_functions.tracker_to_marker(tracker,color,stamp,self.map_frame)
             tracker_marker_list.markers.append(tracker_marker)
         
         # map_based_trackers = [types_helper.lidar2map_coordinates(self.tf_map2lidar,tracker) for tracker in trackers]
         # print("Trackers: ", map_based_trackers)
-        if self.DEBUG: print("Types: ", types)
-        if self.DEBUG: print("Velocities: ", vels)
-        if self.DEBUG: print("MOT markers: ", len(tracker_marker_list.markers))
+        # if self.DEBUG: print("Types: ", types)
+        # if self.DEBUG: print("Velocities: ", vels)
+        # if self.DEBUG: print("MOT markers: ", len(tracker_marker_list.markers))
         self.pub_mot_markers.publish(tracker_marker_list)
-        end__ = time.time()
         
-        print("Time SmartMOT pipeline: ", end__ - start__)
         # mott2 = time.time()
         # if self.DEBUG: print(f"Time consumed during Multi-Object Tracking pipeline: {mott2-mott1}")
                
