@@ -175,14 +175,14 @@ def get_trajectory_marker(obstacle_buffer):
         
     return observations_marker, predictions_marker
 
-def tracker_to_marker(tracker,color,stamp):
+def tracker_to_marker(tracker,color,stamp,frame_id):
     """
     Fill the obstacle features using real world metrics. Tracker presents a predicted state vector 
     (x,y,l,w,theta, ID)
     """
     tracked_obstacle = Marker()
 
-    tracked_obstacle.header.frame_id = 'ego_vehicle/lidar/lidar1'
+    tracked_obstacle.header.frame_id = frame_id
     tracked_obstacle.header.stamp = stamp
     tracked_obstacle.ns = "tracked_obstacles"
     tracked_obstacle.action = tracked_obstacle.ADD
@@ -210,6 +210,6 @@ def tracker_to_marker(tracker,color,stamp):
     tracked_obstacle.color.b = color[0]
     tracked_obstacle.color.a = 1.0
 
-    tracked_obstacle.lifetime = rospy.Duration(1.0) # 1 second
+    tracked_obstacle.lifetime = rospy.Duration(0.2) # seconds
 
     return tracked_obstacle

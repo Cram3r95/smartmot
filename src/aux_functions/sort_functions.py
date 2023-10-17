@@ -205,6 +205,6 @@ def merged_bboxes_to_xylwthetascore_types(merged_bboxes):
     bboxes = np.array([[0,0,0,0,0,0]])
     types = np.array(["no_objects"])
 
-  print("bboxes: ", bboxes)
+  # print("bboxes: ", bboxes)
 
   return bboxes,types
