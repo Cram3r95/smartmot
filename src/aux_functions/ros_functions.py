@@ -32,7 +32,7 @@ from tf.transformations import quaternion_from_euler
 
 #######################################
 
-LIFETIME = 1.0
+LIFETIME = 0.5
 NUM_COLOURS = 32
 COLOURS = np.random.rand(NUM_COLOURS,3)
 PRED_LEN = 20 # Steps
@@ -210,6 +210,41 @@ def tracker_to_marker(tracker,color,stamp,frame_id):
     tracked_obstacle.color.b = color[0]
     tracked_obstacle.color.a = 1.0
 
-    tracked_obstacle.lifetime = rospy.Duration(0.2) # seconds
+    tracked_obstacle.lifetime = rospy.Duration(LIFETIME) # seconds
 
     return tracked_obstacle
+
+def get_detection_marker(actor):
+    """
+    """
+
+    marker = Marker()
+    marker.header.frame_id = "/map"
+    marker.type = marker.CUBE
+    marker.action = marker.ADD
+    marker.id = actor.object_id
+    
+    marker.scale.x = actor.dimensions.x
+    marker.scale.y = actor.dimensions.y
+    marker.scale.z = actor.dimensions.z
+    
+    marker.color.a = 1.0
+
+    marker.ns = "out_monitored_area_object"
+    marker.color.r = 0.5
+    marker.color.g = 0.5
+    marker.color.b = 0.5
+    
+    quaternion = quaternion_from_euler(0,0,actor.rotation_z)
+    marker.pose.orientation.x = quaternion[0]
+    marker.pose.orientation.y = quaternion[1]
+    marker.pose.orientation.z = quaternion[2]
+    marker.pose.orientation.w = quaternion[3]
+    
+    marker.lifetime = rospy.Duration.from_sec(LIFETIME)
+    
+    marker.pose.position.x = actor.global_position.x
+    marker.pose.position.y = actor.global_position.y
+    marker.pose.position.z = 0
+    
+    return marker

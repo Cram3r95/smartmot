@@ -58,13 +58,14 @@ class SmartMOT():
         """
         """
 
-        self.DEBUG = True
+        self.DEBUG = False
         self.ego_vehicle_location = None
         self.trackers = {}
         self.monitored_lanes = MonitorizedLanes()
         self.COMPUTE_MARKERS = True
-        self.USE_HDMAP = True
+        self.USE_HDMAP = False
         self.REAL_WORLD = False
+        self.use_gaussian_noise = True
         
         # Multi-Object Tracking
         
@@ -88,6 +89,7 @@ class SmartMOT():
         self.pub_map_monitor_filtered_detections_markers = rospy.Publisher(map_monitor_filtered_detections_markers, MarkerArray, queue_size=10)
     
         self.pub_mot_markers = rospy.Publisher("/t4ac/perception/mot_bounding_bboxes", MarkerArray, queue_size=10)
+        self.pub_non_relevant_detections_markers = rospy.Publisher("/t4ac/perception/non_relevant_bounding_bboxes", MarkerArray, queue_size=10)
         
         ## Subscribers
         
@@ -122,9 +124,9 @@ class SmartMOT():
     def detections_callback(self, detections_rosmsg):
         """
         """
-        
+        start_whole = time.time()
         # Map to LiDAR
-
+        
         try:                                                         # Target        # Source
             (translation,quaternion) = self.listener.lookupTransform(self.map_frame, self.lidar_frame, rospy.Time(0)) 
             # rospy.Time(0) get us the latest available transform
@@ -143,6 +145,7 @@ class SmartMOT():
             map_monitor_filtered_objects = MarkerArray()
             
             relevant_detections = []
+            non_relevant_detections_marker_list = []
             
             if self.REAL_WORLD:
                 # If Object detection in AIVATAR project (Real-World)
@@ -158,11 +161,6 @@ class SmartMOT():
                                 is_relevant, in_road, particular_monitorized_area, _, _ = monitors_functions.inside_lane(detection.global_position, lane, detection.type)
                             
                                 if is_relevant:
-                                    # if detection.object_id not in self.trackers.keys():
-                                    #     self.trackers[detection.object_id] = [detection]
-                                    # else:
-                                    #     self.trackers[detection.object_id].append(detection)
-                                    
                                     # Global coordinates
                                     # TODO: Fill the velocity of the object in the 7th position of the list
                                     detection_yaw = ego_yaw - detection_yaw # To obtain the angle in global frame, i.e. map coordinates
@@ -190,7 +188,18 @@ class SmartMOT():
             else:
                 # If AD-PerDevKit (at this moment in the CARLA Leaderboard)
                 for i,detection in enumerate(detections_rosmsg.gt_3d_object_list):                    
-                    if i > 0: # We assume the first object, if using GT, it is the ego-vehicle. Avoid this.                     
+                    if i > 0: # We assume the first object, if using GT, it is the ego-vehicle. Avoid this. 
+                        
+                        if self.use_gaussian_noise:
+                            mu = 0 # 0
+                            sigma = 0.05 # 0.05
+                            
+                            x_offset, y_offset, theta_offset = np.random.normal(mu,sigma), np.random.normal(mu,sigma), np.random.normal(mu,sigma)
+
+                            detection.global_position.x += x_offset
+                            detection.global_position.y += y_offset
+                            detection.rotation_z += np.pi/8*theta_offset  
+                                                              
                         if self.USE_HDMAP:
                             is_relevant = False
                             for lane in self.monitored_lanes.lanes:
@@ -202,7 +211,7 @@ class SmartMOT():
                                         # TODO: Fill the velocity of the object in the 7th position of the list
                                         
                                         detection.rotation_z = ego_yaw - detection.rotation_z # To obtain the angle in global frame, i.e. map coordinates
-                                        
+
                                         relevant_detection = [detection.global_position.x, detection.global_position.y, detection.global_position.z, # x,y,z
                                                                 detection.dimensions.x, detection.dimensions.y, detection.dimensions.z, # l,w,h
                                                                 detection.rotation_z, 0, detection.type] # theta, vel, type
@@ -210,12 +219,18 @@ class SmartMOT():
                                         relevant_detections.append(relevant_detection)
                                         
                                         break
+                                    
+                            if not is_relevant:
+                                detection.rotation_z = ego_yaw - detection.rotation_z # To obtain the angle in global frame, i.e. map coordinates
+                                
+                                non_relevant_detection_marker = ros_functions.get_detection_marker(detection)
+                                non_relevant_detections_marker_list.append(non_relevant_detection_marker)
                         else:
                             # Global coordinates
                             # TODO: Fill the velocity of the object in the 7th position of the list
                             
                             detection.rotation_z = ego_yaw - detection.rotation_z # To obtain the angle in global frame, i.e. map coordinates
-                            
+
                             relevant_detection = [detection.global_position.x, detection.global_position.y, detection.global_position.z, # x,y,z
                                                     detection.dimensions.x, detection.dimensions.y, detection.dimensions.z, # l,w,h
                                                     detection.rotation_z, 0, detection.type] # theta, vel, type
@@ -244,140 +259,12 @@ class SmartMOT():
             tracker_marker = ros_functions.tracker_to_marker(tracker,color,stamp,self.map_frame)
             tracker_marker_list.markers.append(tracker_marker)
         
-        # map_based_trackers = [types_helper.lidar2map_coordinates(self.tf_map2lidar,tracker) for tracker in trackers]
-        # print("Trackers: ", map_based_trackers)
-        # if self.DEBUG: print("Types: ", types)
-        # if self.DEBUG: print("Velocities: ", vels)
-        # if self.DEBUG: print("MOT markers: ", len(tracker_marker_list.markers))
         self.pub_mot_markers.publish(tracker_marker_list)
+        self.pub_non_relevant_detections_markers.publish(non_relevant_detections_marker_list)
         
-        # mott2 = time.time()
-        # if self.DEBUG: print(f"Time consumed during Multi-Object Tracking pipeline: {mott2-mott1}")
-               
-        #     #         if self.COMPUTE_MARKERS:    
-        #     #             marker = ros_functions.get_detection_marker(detection, is_relevant)
-        #     #             map_monitor_filtered_objects.markers.append(marker)
-                        
-        #     #             if is_relevant:
-        #     #                 # OBS: The frequency with which we received these data is not fixed. I.e. 20 steps would not
-        #     #                 # necessarily mean 2 s (regarding a frequency of 10 Hz) -> TODO: Fix that
-        #     #                 observations_marker, predictions_marker = ros_functions.get_trajectory_marker(self.trackers[detection.object_id][-OBS_LEN:])
-        #     #                 map_monitor_filtered_objects.markers.append(observations_marker)
-        #     #                 map_monitor_filtered_objects.markers.append(predictions_marker)
-                        
-        #     # if self.COMPUTE_MARKERS: self.pub_map_monitor_filtered_detections_markers.publish(map_monitor_filtered_objects)
-            
-        # # print(f"Time consumed: {time.time() - start}")
+        end_whole = time.time()
+        # print("Time pipeline: ", end_whole-start_whole)
         
-        # #################################################################
-        # ################## MOTION PREDICTION PIPELINE ###################
-        # #################################################################
-        
-        # # Preprocess filtered objects as input for the Motion Prediction algorithm
-
-        # if self.PREPROCESS_TRACKERS:
-        #     self.state.clear()
-        #     id_type = {}
-            
-        #     # We assume that the ego-vehicle is the first object since we have previously sorted from nearest to furthest
-                                
-        #     for i in range(len(filtered_objects.gt_3d_object_list)):
-        #         filtered_obj = filtered_objects.gt_3d_object_list[i]
-
-        #         # OBS: If a timestep i-th has not been truly observed, that particular observation (x,y,binary_flag) 
-        #         # is padded (that is, third dimension set to 0). Otherwise, set to 1
-                
-        #         # TODO: Is this required? You know the identifier of the ego
-                
-        #         if filtered_obj.type == "ego_vehicle":
-        #             if not "ego" in self.list_of_ids:
-        #                 self.list_of_ids["ego"] = [[0, 0, 0] for _ in range(self.motion_predictor.OBS_LEN)] # Initialize buffer
-
-        #             self.list_of_ids["ego"].append([filtered_obj.global_position.x, 
-        #                                             filtered_obj.global_position.y,
-        #                                             1])
-                    
-        #             self.state[filtered_obj.object_id] = np.array(self.list_of_ids["ego"][-self.motion_predictor.OBS_LEN:])
-        #             id_type[filtered_obj.object_id] = filtered_obj.type
-                    
-        #         else: # Other agents
-        #             adv_id = filtered_obj.object_id
-        #             if self.DEBUG: print("Adversary ID: ", adv_id)
-        #             x_adv = filtered_obj.global_position.x
-        #             y_adv = filtered_obj.global_position.y
-                    
-        #             if adv_id in self.list_of_ids:
-        #                 self.list_of_ids[adv_id].append([x_adv, y_adv, 1])
-        #             else:
-        #                 self.list_of_ids[adv_id] = [[0, 0, 0] for _ in range(self.motion_predictor.OBS_LEN)]
-        #                 self.list_of_ids[adv_id].append([x_adv, y_adv, 1])
-
-        #             self.state[adv_id] = np.array(self.list_of_ids[adv_id][-self.motion_predictor.OBS_LEN:])
-        #             id_type[filtered_obj.object_id] = filtered_obj.type
-                    
-        #             if self.DEBUG: print("Agents state: ", self.state[adv_id])
-
-        #         if (self.timestamp > 0 
-        #             and (filtered_obj.object_id in actors_scenario
-        #                 or "ego" in actors_scenario)):
-        #             if filtered_obj.type == "ego_vehicle":
-        #                 agent_to_remove = actors_scenario.index("ego")
-        #             else:
-        #                 agent_to_remove = actors_scenario.index(filtered_obj.object_id)
-        #             actors_scenario.pop(agent_to_remove)
-
-        #     # Set 0,0,0 (padding) for actors that are in the list_of_ids buffer but 
-        #     # they have not been observed in the current timestamp
-
-        #     # TODO: Is this correct?
-            
-        #     # if self.timestamp > 0:
-        #     #     for non_observed_actor_id in actors_scenario:
-        #     #         self.list_of_ids[non_observed_actor_id].append([0, 0, 0])
-                
-        #     # Save current observations into .csv to be predicted offline
-            
-        #     if self.safe_csv:
-        #         self.write_csv(self.state, self.timestamp)
-                
-        #         # if TIME_SCENARIO > 0 and not self.init_stop_callback: 
-        #         #     print("AB4COGT: Start collection data")
-        #         #     rospy.Timer(rospy.Duration(TIME_SCENARIO), stop_callback)
-        #         #     self.init_stop_callback = True
-    
-        #     # Preprocess trackers
-            
-        #     valid_agents_info, valid_agents_id = self.motion_predictor.preprocess_trackers(self.state)
-                
-        #     if valid_agents_info: # Agents with more than a certain number of observations
-        #         # Plot observations ROS markers
-                
-        #         for num_object, valid_agent_info in enumerate(valid_agents_info):
-        #             if num_object > 0: # Avoid plotting the ego-vehicle, we already have the URDF marker
-        #                 marker = get_observations_marker(valid_agent_info, 
-        #                                                     id_type)
-        #                 gt_detections_marker_list.markers.append(marker)
-
-        #         self.pub_gt_marker.publish(gt_detections_marker_list)
-                
-        #     # Online prediction
-
-        #     if self.USE_PREDICTION and valid_agents_info: 
-        #         # Predict agents
-                
-        #         predictions, confidences = self.motion_predictor.predict_agents(valid_agents_info, self.timestamp)
-
-        #         # Plot predictions ROS markers
-
-        #         if len(predictions) > 0:
-        #             self.motion_predictor.plot_predictions_ros_markers(predictions, 
-        #                                                             confidences, 
-        #                                                             valid_agents_id, 
-        #                                                             self.ego_vehicle_location.header.stamp,
-        #                                                             COLOURS,
-        #                                                             apply_colour=APPLY_RANDOM_COLOUR,
-        #                                                             lifetime=LIFETIME)  
-            
 if __name__=="__main__":
     """
     """
