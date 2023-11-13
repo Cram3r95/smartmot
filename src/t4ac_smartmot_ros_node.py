@@ -192,7 +192,7 @@ class SmartMOT():
                         
                         if self.use_gaussian_noise:
                             mu = 0 # 0
-                            sigma = 0.05 # 0.05
+                            sigma = 0.1 # 0.05
                             
                             x_offset, y_offset, theta_offset = np.random.normal(mu,sigma), np.random.normal(mu,sigma), np.random.normal(mu,sigma)
 

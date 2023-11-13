@@ -19,6 +19,7 @@ Note that
 
 import numpy as np
 import math
+import pdb
 
 import rospy
 import geometry_msgs.msg
@@ -99,6 +100,7 @@ class Sort(object):
     to_del = []
     ret, ret_type, ret_vel = [], [], []
     for t, trk in enumerate(trks):
+      
       pos = self.trackers[t].predict()[0]
       trk[:] = [pos[0], pos[1], pos[2], pos[3], 0]
       if np.any(np.isnan(pos)):
@@ -119,7 +121,14 @@ class Sort(object):
         ret_vel.append(dets[d][5])
 
         trk.update(dets[d,:]) # Update the space state
+        
+        # TODO: Improve the orientation. At this moment it is not perfect -> Substitute with the original
+        # THIS IS NOT CORRECT!!
+        
+        # trk.kf.x[4] = dets[d,4]
 
+        # TODO: Improve the orientation. At this moment it is not perfect -> Substitute with the original
+        
     # 3. Create and initialise preliminar trackers for unmatched detections
 
     for i in unmatched_dets:
@@ -141,9 +150,11 @@ class Sort(object):
     for t,trk in enumerate(self.trackers):
       # if(t not in unmatched_trks):  
       d = trk.get_state()[0] # Predicted state in next frame
+      
       # if((trk.time_since_update < 1) and (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits)):
       if((trk.time_since_update <= self.max_age) and (trk.hit_streak >= self.min_hits or self.frame_count <= self.min_hits)):
           # id+1 as MOT benchmark requires positive 
+
           ret.append(np.concatenate((d,[trk.id+1])).reshape(1,-1)) 
       # i -= 1
       # Remove dead tracklet
